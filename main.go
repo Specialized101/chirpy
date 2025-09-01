@@ -44,14 +44,14 @@ func main() {
 	fs := apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", http.StripPrefix("/app", fs))
 
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
 
-	mux.HandleFunc("GET /metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("POST /reset", apiCfg.handlerReset)
+	mux.HandleFunc("GET /api/metrics", apiCfg.handlerMetrics)
+	mux.HandleFunc("POST /api/reset", apiCfg.handlerReset)
 
 	server := &http.Server{
 		Addr:    ADDR + ":" + PORT,
