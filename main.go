@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,7 +25,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/html")
+	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(200)
 	body := fmt.Sprintf(`
 <html>
@@ -38,10 +39,29 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
-	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	cfg.fileserverHits.Store(0)
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
+}
+
+func respondWithJSON(w http.ResponseWriter, statusCode int, payload interface{}) error {
+	response, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	w.Write(response)
+	return nil
+}
+
+func respondWithError(w http.ResponseWriter, statusCode int, msg string) error {
+	return respondWithJSON(w, statusCode, map[string]string{"error": msg})
+}
+
+func respondWithValid(w http.ResponseWriter, statusCode int) error {
+	return respondWithJSON(w, statusCode, map[string]bool{"valid": true})
 }
 
 func main() {
@@ -52,9 +72,36 @@ func main() {
 	mux.Handle("/app/", http.StripPrefix("/app", fs))
 
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+		type reqParams struct {
+			Body string `json:"body"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		params := reqParams{}
+		if err := decoder.Decode(&params); err != nil {
+			err = respondWithError(w, 500, "Something went wrong")
+			if err != nil {
+				log.Printf("failed to marshal response: %v", err)
+				w.WriteHeader(500)
+				return
+			}
+		}
+		if len(params.Body) > 140 {
+			err := respondWithError(w, 400, "Chirp is too long")
+			if err != nil {
+				log.Printf("failed to marshal response: %v", err)
+				w.WriteHeader(500)
+			}
+			return
+		}
+		if err := respondWithValid(w, 200); err != nil {
+			log.Printf("failed to marshal response: %v", err)
+			w.WriteHeader(500)
+		}
 	})
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
