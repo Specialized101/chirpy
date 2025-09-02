@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -45,7 +47,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
-func respondWithJSON(w http.ResponseWriter, statusCode int, payload interface{}) error {
+func respondWithJSON(w http.ResponseWriter, statusCode int, payload any) error {
 	response, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -60,8 +62,17 @@ func respondWithError(w http.ResponseWriter, statusCode int, msg string) error {
 	return respondWithJSON(w, statusCode, map[string]string{"error": msg})
 }
 
-func respondWithValid(w http.ResponseWriter, statusCode int) error {
-	return respondWithJSON(w, statusCode, map[string]bool{"valid": true})
+func censorBadWords(s string) string {
+	words := strings.Split(s, " ")
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+	censoredWords := []string{}
+	for _, w := range words {
+		if slices.Contains(badWords, strings.ToLower(w)) {
+			w = "****"
+		}
+		censoredWords = append(censoredWords, w)
+	}
+	return strings.Join(censoredWords, " ")
 }
 
 func main() {
@@ -76,7 +87,7 @@ func main() {
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-	mux.HandleFunc("/api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
 		type reqParams struct {
 			Body string `json:"body"`
 		}
@@ -98,7 +109,7 @@ func main() {
 			}
 			return
 		}
-		if err := respondWithValid(w, 200); err != nil {
+		if err := respondWithJSON(w, 200, map[string]string{"cleaned_body": censorBadWords(params.Body)}); err != nil {
 			log.Printf("failed to marshal response: %v", err)
 			w.WriteHeader(500)
 		}
