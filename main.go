@@ -11,8 +11,10 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/Specialized101/chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -24,6 +26,7 @@ const (
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -84,15 +87,15 @@ func censorBadWords(s string) string {
 
 func main() {
 	godotenv.Load()
+	apiCfg := &apiConfig{}
+	mux := http.NewServeMux()
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
-	dbQueries := database.New(db)
-	dbQueries.CreateUser(context.Background(), database.CreateUserParams{})
+	apiCfg.db = database.New(db)
+	apiCfg.db.CreateUser(context.Background(), database.CreateUserParams{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	apiCfg := &apiConfig{}
-	mux := http.NewServeMux()
 
 	fs := apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", http.StripPrefix("/app", fs))
@@ -128,6 +131,42 @@ func main() {
 			log.Printf("failed to marshal response: %v", err)
 			w.WriteHeader(500)
 		}
+	})
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		type reqParams struct {
+			Email string `json:"email"`
+		}
+		type returnVals struct {
+			ID        uuid.UUID `json:"id"`
+			CreatedAt time.Time `json:"created_at"`
+			UpdatedAt time.Time `json:"updated_at"`
+			Email     string    `json:"email"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		params := reqParams{}
+		if err := decoder.Decode(&params); err != nil {
+			err = respondWithError(w, 500, "Something went wrong")
+			if err != nil {
+				log.Printf("failed to marshal response: %v", err)
+			}
+			return
+		}
+		user, err := apiCfg.db.CreateUser(r.Context(), database.CreateUserParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Email:     params.Email,
+		})
+		if err != nil {
+			respondWithError(w, 500, "Something went wrong")
+			return
+		}
+		respondWithJSON(w, 201, returnVals{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		})
 	})
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
