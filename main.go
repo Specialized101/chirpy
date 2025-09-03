@@ -27,6 +27,7 @@ const (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -51,8 +52,13 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if cfg.platform != "dev" {
+		w.WriteHeader(403)
+		return
+	}
 	cfg.fileserverHits.Store(0)
+	cfg.db.DeleteUsers(r.Context())
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
@@ -91,6 +97,7 @@ func main() {
 	mux := http.NewServeMux()
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
+	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.db = database.New(db)
 	apiCfg.db.CreateUser(context.Background(), database.CreateUserParams{})
 	if err != nil {
