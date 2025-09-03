@@ -1,13 +1,20 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/Specialized101/chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 const (
@@ -76,6 +83,14 @@ func censorBadWords(s string) string {
 }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	dbQueries := database.New(db)
+	dbQueries.CreateUser(context.Background(), database.CreateUserParams{})
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
 	apiCfg := &apiConfig{}
 	mux := http.NewServeMux()
 
