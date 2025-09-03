@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -39,7 +38,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 	body := fmt.Sprintf(`
 <html>
 	<body>
@@ -53,13 +52,17 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	if cfg.platform != "dev" {
-		w.WriteHeader(403)
+		w.WriteHeader(http.StatusForbidden)
 		return
 	}
 	cfg.fileserverHits.Store(0)
-	cfg.db.DeleteUsers(r.Context())
+	if err := cfg.db.DeleteUsers(r.Context()); err != nil {
+		log.Printf("reset error: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(200)
+	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
@@ -97,19 +100,21 @@ func main() {
 	mux := http.NewServeMux()
 	dbURL := os.Getenv("DB_URL")
 	db, err := sql.Open("postgres", dbURL)
-	apiCfg.platform = os.Getenv("PLATFORM")
-	apiCfg.db = database.New(db)
-	apiCfg.db.CreateUser(context.Background(), database.CreateUserParams{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
+	if err := db.Ping(); err != nil {
+		log.Fatalf("database not responding: %v", err)
+	}
+	apiCfg.platform = os.Getenv("PLATFORM")
+	apiCfg.db = database.New(db)
 
 	fs := apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", http.StripPrefix("/app", fs))
 
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
 	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
@@ -119,25 +124,17 @@ func main() {
 		decoder := json.NewDecoder(r.Body)
 		params := reqParams{}
 		if err := decoder.Decode(&params); err != nil {
-			err = respondWithError(w, 500, "Something went wrong")
-			if err != nil {
-				log.Printf("failed to marshal response: %v", err)
-				w.WriteHeader(500)
-				return
-			}
-		}
-		if len(params.Body) > 140 {
-			err := respondWithError(w, 400, "Chirp is too long")
-			if err != nil {
-				log.Printf("failed to marshal response: %v", err)
-				w.WriteHeader(500)
-			}
+			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
-		if err := respondWithJSON(w, 200, map[string]string{"cleaned_body": censorBadWords(params.Body)}); err != nil {
-			log.Printf("failed to marshal response: %v", err)
-			w.WriteHeader(500)
+		if len(params.Body) > 140 {
+			_ = respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+			return
 		}
+		_ = respondWithJSON(
+			w,
+			http.StatusOK,
+			map[string]string{"cleaned_body": censorBadWords(params.Body)})
 	})
 	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
 		type reqParams struct {
@@ -152,23 +149,25 @@ func main() {
 		decoder := json.NewDecoder(r.Body)
 		params := reqParams{}
 		if err := decoder.Decode(&params); err != nil {
-			err = respondWithError(w, 500, "Something went wrong")
-			if err != nil {
-				log.Printf("failed to marshal response: %v", err)
-			}
+			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+			return
+		}
+		if strings.TrimSpace(params.Email) == "" {
+			_ = respondWithError(w, http.StatusBadRequest, "email is required")
 			return
 		}
 		user, err := apiCfg.db.CreateUser(r.Context(), database.CreateUserParams{
 			ID:        uuid.New(),
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
 			Email:     params.Email,
 		})
 		if err != nil {
-			respondWithError(w, 500, "Something went wrong")
+			log.Printf("failed to create user: %v\n", err)
+			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
 			return
 		}
-		respondWithJSON(w, 201, returnVals{
+		_ = respondWithJSON(w, http.StatusCreated, returnVals{
 			ID:        user.ID,
 			CreatedAt: user.CreatedAt,
 			UpdatedAt: user.UpdatedAt,
