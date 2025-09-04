@@ -66,6 +66,92 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	type reqParams struct {
+		Email string `json:"email"`
+	}
+	type returnVals struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := reqParams{}
+	if err := decoder.Decode(&params); err != nil {
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	if strings.TrimSpace(params.Email) == "" {
+		_ = respondWithError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	user, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Email:     params.Email,
+	})
+	if err != nil {
+		log.Printf("failed to create user: %v\n", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	_ = respondWithJSON(w, http.StatusCreated, returnVals{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
+}
+
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type reqParams struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	type returnVals struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := reqParams{}
+	if err := decoder.Decode(&params); err != nil {
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	if len(params.Body) > 140 {
+		_ = respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+	if strings.TrimSpace(params.Body) == "" {
+		_ = respondWithError(w, http.StatusBadRequest, "Body is required and must not be empty")
+		return
+	}
+	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Body:      censorBadWords(params.Body),
+		UserID:    params.UserID,
+	})
+	if err != nil {
+		log.Printf("failed to create chirp: %v\n", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	_ = respondWithJSON(w, http.StatusCreated, returnVals{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
+}
+
 func respondWithJSON(w http.ResponseWriter, statusCode int, payload any) error {
 	response, err := json.Marshal(payload)
 	if err != nil {
@@ -117,63 +203,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
-	mux.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
-		type reqParams struct {
-			Body string `json:"body"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := reqParams{}
-		if err := decoder.Decode(&params); err != nil {
-			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-			return
-		}
-		if len(params.Body) > 140 {
-			_ = respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-			return
-		}
-		_ = respondWithJSON(
-			w,
-			http.StatusOK,
-			map[string]string{"cleaned_body": censorBadWords(params.Body)})
-	})
-	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
-		type reqParams struct {
-			Email string `json:"email"`
-		}
-		type returnVals struct {
-			ID        uuid.UUID `json:"id"`
-			CreatedAt time.Time `json:"created_at"`
-			UpdatedAt time.Time `json:"updated_at"`
-			Email     string    `json:"email"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		params := reqParams{}
-		if err := decoder.Decode(&params); err != nil {
-			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-			return
-		}
-		if strings.TrimSpace(params.Email) == "" {
-			_ = respondWithError(w, http.StatusBadRequest, "email is required")
-			return
-		}
-		user, err := apiCfg.db.CreateUser(r.Context(), database.CreateUserParams{
-			ID:        uuid.New(),
-			CreatedAt: time.Now().UTC(),
-			UpdatedAt: time.Now().UTC(),
-			Email:     params.Email,
-		})
-		if err != nil {
-			log.Printf("failed to create user: %v\n", err)
-			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
-			return
-		}
-		_ = respondWithJSON(w, http.StatusCreated, returnVals{
-			ID:        user.ID,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
-			Email:     user.Email,
-		})
-	})
+	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
