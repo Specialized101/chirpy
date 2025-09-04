@@ -152,6 +152,66 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	type returnVals struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		log.Printf("failed to get all chirps from db: %v\n", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	var data []returnVals
+	for _, c := range chirps {
+		data = append(data, returnVals{
+			ID:        c.ID,
+			CreatedAt: c.CreatedAt,
+			UpdatedAt: c.UpdatedAt,
+			Body:      c.Body,
+			UserID:    c.UserID,
+		})
+	}
+
+	_ = respondWithJSON(w, http.StatusOK, data)
+}
+
+func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	type returnVals struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		_ = respondWithError(w, http.StatusBadRequest, "Chirp id is not valid")
+		return
+	}
+	chirp, err := cfg.db.GetChirpByID(r.Context(), chirpID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			_ = respondWithError(w, http.StatusNotFound, "the chirp does not exist")
+			return
+		}
+		log.Printf("Failed to get chirp by id: %v\n", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	_ = respondWithJSON(w, http.StatusOK, returnVals{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
+}
+
 func respondWithJSON(w http.ResponseWriter, statusCode int, payload any) error {
 	response, err := json.Marshal(payload)
 	if err != nil {
@@ -203,6 +263,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 
