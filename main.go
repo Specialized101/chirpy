@@ -28,6 +28,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	secret         string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -119,14 +120,16 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type reqParams struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
 	}
 	type returnVals struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
+		Token     string    `json:"token"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := reqParams{}
@@ -143,19 +146,31 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		_ = respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 		return
 	}
+	var tokenExpiration int
+	if params.ExpiresInSeconds == 0 {
+		tokenExpiration = 3600
+	} else {
+		tokenExpiration = min(params.ExpiresInSeconds, 3600)
+	}
+	token, err := auth.MakeJWT(user.ID, cfg.secret, time.Second*time.Duration(tokenExpiration))
+	if err != nil {
+		log.Printf("failed to create jwt token: %v\n", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
 	_ = respondWithJSON(w, http.StatusOK, returnVals{
 		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email:     user.Email,
+		Token:     token,
 	})
 
 }
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type reqParams struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	type returnVals struct {
 		ID        uuid.UUID `json:"id"`
@@ -168,6 +183,16 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	params := reqParams{}
 	if err := decoder.Decode(&params); err != nil {
 		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		_ = respondWithError(w, http.StatusUnauthorized, "token is missing")
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		_ = respondWithError(w, http.StatusUnauthorized, "token is invalid or expired")
 		return
 	}
 	if len(params.Body) > 140 {
@@ -183,7 +208,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 		Body:      censorBadWords(params.Body),
-		UserID:    params.UserID,
+		UserID:    userID,
 	})
 	if err != nil {
 		log.Printf("failed to create chirp: %v\n", err)
@@ -300,6 +325,7 @@ func main() {
 		log.Fatalf("database not responding: %v", err)
 	}
 	apiCfg.platform = os.Getenv("PLATFORM")
+	apiCfg.secret = os.Getenv("SECRET_KEY")
 	apiCfg.db = database.New(db)
 
 	fs := apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))
