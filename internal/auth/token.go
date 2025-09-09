@@ -24,22 +24,21 @@ func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
 }
 
 func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
-	claims := jwt.MapClaims{}
+	claims := &jwt.RegisteredClaims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
 		return []byte(tokenSecret), nil
 	})
+	if err != nil || !token.Valid {
+		return uuid.Nil, fmt.Errorf("invalid token: %w", err)
+	}
+	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
 		return uuid.Nil, err
 	}
-	userID, err := token.Claims.GetSubject()
-	if err != nil {
-		return uuid.Nil, err
-	}
-	parsedUUID, err := uuid.Parse(userID)
-	if err != nil {
-		return uuid.Nil, err
-	}
-	return parsedUUID, nil
+	return userID, nil
 }
 
 func GetBearerToken(headers http.Header) (string, error) {

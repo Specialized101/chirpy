@@ -39,6 +39,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
 	body := fmt.Sprintf(`
@@ -53,6 +54,7 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	if cfg.platform != "dev" {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -69,6 +71,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type reqParams struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -118,7 +121,72 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	accessToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		_ = respondWithError(w, http.StatusUnauthorized, "access token is missing/malformed in the header")
+		return
+	}
+	userID, err := auth.ValidateJWT(accessToken, cfg.secret)
+	if err != nil {
+		_ = respondWithError(w, http.StatusUnauthorized, "access token is invalid")
+		return
+	}
+	type reqParams struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	type returnVals struct {
+		ID           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := reqParams{}
+	if err := decoder.Decode(&params); err != nil {
+		log.Printf("failed to decode request params: %v", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	hashedPwd, err := auth.HashPassword(params.Password)
+	if err != nil {
+		log.Printf("failed to hash the password: %v", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	user, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashedPwd,
+		ID:             userID,
+	})
+	if err != nil {
+		log.Printf("failed to update user: %v", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+
+	rt, err := cfg.db.GetRefreshTokenByUserId(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("failed to get refresh token: %v", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	_ = respondWithJSON(w, http.StatusOK, returnVals{
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        accessToken,
+		RefreshToken: rt.Token,
+	})
+}
+
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type reqParams struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -196,6 +264,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type returnVals struct {
 		Token string `json:"token"`
 	}
@@ -237,6 +306,7 @@ func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	rt, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		_ = respondWithError(w, http.StatusUnauthorized, "refresh token is required in the authorization header")
@@ -252,6 +322,7 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type reqParams struct {
 		Body string `json:"body"`
 	}
@@ -308,6 +379,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type returnVals struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
@@ -336,6 +408,7 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	type returnVals struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
@@ -426,6 +499,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
