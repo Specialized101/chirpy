@@ -77,10 +77,11 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		Password string `json:"password"`
 	}
 	type returnVals struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := reqParams{}
@@ -114,10 +115,11 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	_ = respondWithJSON(w, http.StatusCreated, returnVals{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	})
 }
 
@@ -144,6 +146,7 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		Email        string    `json:"email"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := reqParams{}
@@ -182,6 +185,7 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		Email:        user.Email,
 		Token:        accessToken,
 		RefreshToken: rt.Token,
+		IsChirpyRed:  user.IsChirpyRed,
 	})
 }
 
@@ -198,6 +202,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email        string    `json:"email"`
 		Token        string    `json:"token"`
 		RefreshToken string    `json:"refresh_token"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	params := reqParams{}
@@ -259,6 +264,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Email:        user.Email,
 		Token:        token,
 		RefreshToken: refreshToken,
+		IsChirpyRed:  user.IsChirpyRed,
 	})
 
 }
@@ -479,6 +485,42 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	type reqParams struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserId string `json:"user_id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	params := reqParams{}
+	if err := decoder.Decode(&params); err != nil {
+		log.Printf("failed to decode request params: %v", err)
+		_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	userId, err := uuid.Parse(params.Data.UserId)
+	if err != nil {
+		_ = respondWithError(w, http.StatusBadRequest, "user id is invalid")
+	}
+	_, err = cfg.db.UpgradeUser(r.Context(), userId)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			_ = respondWithError(w, http.StatusNotFound, "the user does not exist")
+		} else {
+			log.Printf("failed to upgrade user: %v", err)
+			_ = respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func respondWithJSON(w http.ResponseWriter, statusCode int, payload any) error {
 	response, err := json.Marshal(payload)
 	if err != nil {
@@ -538,6 +580,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhooks)
 	mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
 
