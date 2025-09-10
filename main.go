@@ -29,6 +29,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -487,6 +488,13 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 
 func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
+
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKey != cfg.polkaKey {
+		_ = respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
 	type reqParams struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -563,6 +571,7 @@ func main() {
 	}
 	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.secret = os.Getenv("SECRET_KEY")
+	apiCfg.polkaKey = os.Getenv("POLKA_KEY")
 	apiCfg.db = database.New(db)
 
 	fs := apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))
